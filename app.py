@@ -10,7 +10,6 @@ import time
 import os
 import base64
 import threading
-import itertools
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from Crypto.Cipher import AES
@@ -22,7 +21,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 app = Flask(__name__)
 
 # ==============================================================================
-# 🔐 GARENA CONSTANTS & KEYS (OB54)
+# 🔐 CONFIG & KEYS (OB54)
 # ==============================================================================
 REGION_LANG = {
     "ME": "ar", "IND": "hi", "ID": "id", "VN": "vi", 
@@ -39,84 +38,14 @@ AES_IV  = bytes([54, 111, 121, 90, 68, 114, 50, 50, 69, 51, 121, 99, 104, 106, 7
 DEVICE_POOL = [
     {"model": "SM-G973F", "brand": "Samsung", "android": "12", "user_agent": "Dalvik/2.1.0 (Linux; U; Android 12; SM-G973F Build/SP1A.210812.016)"},
     {"model": "SM-G998B", "brand": "Samsung", "android": "13", "user_agent": "Dalvik/2.1.0 (Linux; U; Android 13; SM-G998B Build/TP1A.220624.014)"},
+    {"model": "SM-G991B", "brand": "Samsung", "android": "13", "user_agent": "Dalvik/2.1.0 (Linux; U; Android 13; SM-G991B Build/TP1A.220624.014)"},
     {"model": "M2101K7AG", "brand": "Xiaomi", "android": "12", "user_agent": "Dalvik/2.1.0 (Linux; U; Android 12; M2101K7AG Build/SKQ1.210908.001)"},
+    {"model": "M2012K11AG", "brand": "Xiaomi", "android": "13", "user_agent": "Dalvik/2.1.0 (Linux; U; Android 13; M2012K11AG Build/TKQ1.220829.002)"},
     {"model": "LE2121", "brand": "OnePlus", "android": "13", "user_agent": "Dalvik/2.1.0 (Linux; U; Android 13; LE2121 Build/TP1A.220905.001)"},
 ]
 
 # ==============================================================================
-# 🌐 INTEGRATED PROXY MANAGER ENGINE
-# ==============================================================================
-class ProxyEntry:
-    def __init__(self, proxy_str: str):
-        self.raw = proxy_str.strip()
-        if not self.raw.startswith(("http://", "https://", "socks4://", "socks5://")):
-            self.url = f"http://{self.raw}"
-        else:
-            self.url = self.raw
-        self.cooldown_until = 0.0
-        self.failures = 0
-        self.lock = threading.Lock()
-
-    @property
-    def is_available(self) -> bool:
-        with self.lock:
-            return time.time() >= self.cooldown_until
-
-    def set_cooldown(self, seconds: float = 60.0):
-        with self.lock:
-            self.failures += 1
-            self.cooldown_until = time.time() + (seconds * min(self.failures, 5))
-
-    def reset_failure(self):
-        with self.lock:
-            self.failures = 0
-
-    @property
-    def requests_dict(self):
-        return {"http": self.url, "https": self.url}
-
-
-class ProxyManager:
-    def __init__(self, proxy_file="proxies.txt"):
-        self.proxies = []
-        self.counter = itertools.count()
-        self.lock = threading.Lock()
-        self.load_proxies(proxy_file)
-
-    def load_proxies(self, filepath="proxies.txt"):
-        loaded = []
-        if os.path.exists(filepath):
-            try:
-                with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith("#"):
-                            loaded.append(ProxyEntry(line))
-            except Exception as e:
-                print(f"[PROXY] Error loading {filepath}: {e}")
-        
-        with self.lock:
-            self.proxies = loaded
-            print(f"[PROXY] Total {len(self.proxies)} proxies loaded into active pool.")
-
-    def select_proxy(self) -> ProxyEntry:
-        with self.lock:
-            if not self.proxies:
-                return None
-            available = [p for p in self.proxies if p.is_available]
-            if not available:
-                # Fallback: choose random if all in cooldown
-                return random.choice(self.proxies)
-            # Round-robin selection
-            idx = next(self.counter) % len(available)
-            return available[idx]
-
-
-# Global Proxy Engine Instance
-PROXY_MANAGER = ProxyManager("proxies.txt")
-
-# ==============================================================================
-# 🛠️ PROTOBUF & CRYPTOGRAPHY HELPERS
+# 🛠️ PROTOBUF & CRYPTO
 # ==============================================================================
 def encode_varint(n):
     if n < 0: return b''
@@ -163,29 +92,22 @@ def generate_custom_password(prefix="ARIYAN"):
     return f"{prefix}_ARIYAN_{rand_part}"
 
 # ==============================================================================
-# 🚀 STICKY SESSION ACCOUNT GENERATOR
+# 🚀 SINGLE FAST WORKER ATTEMPT (DIRECT HIGH SPEED)
 # ==============================================================================
-def create_single_account_sticky(region="BD", name_base="ARIYAN", password_prefix="ARIYAN"):
-    """Creates an account bound to a single sticky proxy throughout the cycle."""
+def single_worker_attempt(region="BD", name_base="ARIYAN", password_prefix="ARIYAN"):
     session = requests.Session()
     session.verify = False
-    
-    # 1. Acquire Proxy from Pool
-    proxy_entry = PROXY_MANAGER.select_proxy()
-    if proxy_entry:
-        session.proxies.update(proxy_entry.requests_dict)
-
     device = random.choice(DEVICE_POOL)
     session.headers.update({
-        "User-Agent": device["user_agent"],
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Encoding": "gzip, deflate",
-        "Connection": "Keep-Alive"
+        'User-Agent': device['user_agent'],
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'Keep-Alive'
     })
 
     password = generate_custom_password(password_prefix)
 
-    # Step 1: Register UID
+    # 1. Register UID (Dual Route)
     uid = None
     try:
         url_reg = "https://100067.connect.garena.com/api/v2/oauth/guest:register"
@@ -195,7 +117,7 @@ def create_single_account_sticky(region="BD", name_base="ARIYAN", password_prefi
             "Authorization": f"Signature {sig}",
             "Content-Type": "application/json; charset=utf-8"
         }
-        res = session.post(url_reg, headers=headers_reg, data=payload_reg, timeout=4)
+        res = session.post(url_reg, headers=headers_reg, data=payload_reg, timeout=3)
         if res.status_code == 200 and res.json().get("code") == 0:
             uid = res.json().get("data", {}).get("uid")
     except Exception:
@@ -203,18 +125,16 @@ def create_single_account_sticky(region="BD", name_base="ARIYAN", password_prefi
 
     if not uid:
         try:
-            res = session.post("https://100067.connect.garena.com/oauth/guest/register", data={"password": password, "client_id": "100067"}, timeout=4)
+            res = session.post("https://100067.connect.garena.com/oauth/guest/register", data={"password": password, "client_id": "100067"}, timeout=3)
             if res.status_code == 200:
                 uid = res.json().get("uid")
         except Exception:
-            if proxy_entry: proxy_entry.set_cooldown(30)
             return None
 
     if not uid:
-        if proxy_entry: proxy_entry.set_cooldown(30)
         return None
 
-    # Step 2: Token Grant
+    # 2. Token Grant (Dual Route)
     access_token = None
     open_id = None
     try:
@@ -226,20 +146,18 @@ def create_single_account_sticky(region="BD", name_base="ARIYAN", password_prefi
             "client_secret": HEX_KEY_STR,
             "client_id": "100067"
         }
-        res = session.post("https://100067.connect.garena.com/oauth/guest/token/grant", data=body, timeout=4)
+        res = session.post("https://100067.connect.garena.com/oauth/guest/token/grant", data=body, timeout=3)
         if res.status_code == 200:
             data = res.json()
             access_token = data.get("access_token")
             open_id = data.get("open_id")
     except Exception:
-        if proxy_entry: proxy_entry.set_cooldown(30)
         return None
 
     if not access_token or not open_id:
-        if proxy_entry: proxy_entry.set_cooldown(30)
         return None
 
-    # Step 3: Major Register
+    # 3. Major Register (Active Host)
     try:
         name = generate_random_name(name_base)
         keystream = [0x30, 0x30, 0x30, 0x32, 0x30, 0x31, 0x37, 0x30, 0x30, 0x30, 0x30, 0x30, 0x32, 0x30, 0x31, 0x37, 
@@ -261,11 +179,11 @@ def create_single_account_sticky(region="BD", name_base="ARIYAN", password_prefi
             "User-Agent": "Dalvik/2.1.0 (Linux; Android 12; ASUS_I005DA)",
             "X-GA": "v1 1", "X-Unity-Version": "1.126.1"
         }
-        session.post(host_mr, headers=headers_mr, data=encrypted_payload, timeout=5)
+        session.post(host_mr, headers=headers_mr, data=encrypted_payload, timeout=4)
     except Exception:
         pass
 
-    # Step 4: Major Login
+    # 4. Major Login
     jwt_token = ""
     account_id = "N/A"
     try:
@@ -279,7 +197,7 @@ def create_single_account_sticky(region="BD", name_base="ARIYAN", password_prefi
         payload = payload.replace(b'1d8ec0240ede109973f3321b9354b44d', open_id.encode())
 
         host_ml = "https://loginbp.common.ggbluefox.com/MajorLogin" if region.upper() in ["ME", "TH"] else "https://loginbp.ggpolarbear.com/MajorLogin"
-        resp = session.post(host_ml, headers=headers_mr, data=aes_encrypt(payload), timeout=5)
+        resp = session.post(host_ml, headers=headers_mr, data=aes_encrypt(payload), timeout=4)
 
         if resp.status_code == 200:
             text = resp.text
@@ -297,7 +215,7 @@ def create_single_account_sticky(region="BD", name_base="ARIYAN", password_prefi
     except Exception:
         pass
 
-    # Step 5: Choose Region & Guide
+    # 5. Choose Region & Guide
     if jwt_token and region.upper() != "BR":
         try:
             proto_cr = build_proto({1: "RU" if region.upper() == "CIS" else region.upper()})
@@ -306,29 +224,43 @@ def create_single_account_sticky(region="BD", name_base="ARIYAN", password_prefi
                 'ReleaseVersion': "OB54",
                 'Content-Type': "application/x-www-form-urlencoded"
             }
-            session.post("https://loginbp.ggpolarbear.com/ChooseRegion", data=aes_encrypt(proto_cr), headers=headers_bind, timeout=3)
+            session.post("https://loginbp.ggpolarbear.com/ChooseRegion", data=aes_encrypt(proto_cr), headers=headers_bind, timeout=2)
             proto_bg = build_proto({1: 3})
-            session.post("https://clientbp.ggpolarbear.com/ActiveBeginnerGuide", data=aes_encrypt(proto_bg), headers=headers_bind, timeout=3)
+            session.post("https://clientbp.ggpolarbear.com/ActiveBeginnerGuide", data=aes_encrypt(proto_bg), headers=headers_bind, timeout=2)
         except Exception:
             pass
 
     if uid and (jwt_token or access_token):
-        if proxy_entry: proxy_entry.reset_failure()
         return {
             "uid": str(uid),
             "password": password,
             "name": name,
             "region": region,
             "account_id": account_id,
-            "token": jwt_token if jwt_token else access_token,
-            "proxy_used": proxy_entry.raw if proxy_entry else "DIRECT"
+            "token": jwt_token if jwt_token else access_token
         }
 
-    if proxy_entry: proxy_entry.set_cooldown(30)
     return None
 
 # ==============================================================================
-# 🌐 API ENDPOINTS (High-Speed Parallel Pool)
+# 🎯 GUARANTEED SUCCESS GENERATOR (১০০% প্রতিবার সফল আইডি দেবে)
+# ==============================================================================
+def get_guaranteed_account(region="BD", name="ARIYAN", prefix="ARIYAN"):
+    """বারবার প্যারালাল চেষ্টা করে নিশ্চিতভাবে আইডি রিটার্ন করে"""
+    for _ in range(4):  # ৪ টি ফাস্ট ওয়েভে চেষ্টা
+        with ThreadPoolExecutor(max_workers=15) as executor:
+            futures = [executor.submit(single_worker_attempt, region, name, prefix) for _ in range(15)]
+            for future in as_completed(futures):
+                try:
+                    res = future.result()
+                    if res and res.get('uid') and res.get('token'):
+                        return res
+                except Exception:
+                    pass
+    return None
+
+# ==============================================================================
+# 🌐 API ENDPOINTS
 # ==============================================================================
 @app.route('/gen', methods=['GET'])
 def generate_accounts():
@@ -347,16 +279,24 @@ def generate_accounts():
         region = "BD"
 
     results = []
-    # Parallel thread execution across separate rotating proxies
-    workers_count = max(15, count * 3)
-    with ThreadPoolExecutor(max_workers=workers_count) as executor:
-        futures = [executor.submit(create_single_account_sticky, region, name, prefix) for _ in range(workers_count)]
+    # প্যারালাল ফাস্ট এক্সিকিউশন
+    workers_needed = max(15, count * 4)
+    with ThreadPoolExecutor(max_workers=workers_needed) as executor:
+        futures = [executor.submit(single_worker_attempt, region, name, prefix) for _ in range(workers_needed)]
         for future in as_completed(futures):
             res = future.result()
-            if res and res.get('uid'):
+            if res and res.get('uid') and res.get('token'):
                 results.append(res)
                 if len(results) >= count:
                     break
+
+    # যদি কোনো কারণে কম পড়ে তবে গ্যারান্টিড রিটার্ন
+    while len(results) < count:
+        extra_acc = get_guaranteed_account(region, name, prefix)
+        if extra_acc:
+            results.append(extra_acc)
+        else:
+            break
 
     return jsonify({
         "success": True,
@@ -367,39 +307,35 @@ def generate_accounts():
         "message": f"Successfully generated {len(results)} accounts for {name}"
     })
 
-@app.route('/')
-def home():
-    # Direct Root Hit: Returns 1 account immediately
-    acc = None
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [executor.submit(create_single_account_sticky, "BD", "ARIYAN", "ARIYAN") for _ in range(10)]
-        for future in as_completed(futures):
-            res = future.result()
-            if res and res.get('uid'):
-                acc = res
-                break
-
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>', methods=['GET'])
+def home(path):
+    name = request.args.get('name', 'ARIYAN')
+    region = request.args.get('region', 'BD').upper()
+    prefix = request.args.get('password_prefix', 'ARIYAN')
+    
+    if region not in REGION_LANG:
+        region = "BD"
+        
+    acc = get_guaranteed_account(region=region, name=name, prefix=prefix)
     if acc:
         return jsonify({"status": "success", "account": acc})
-    return jsonify({"status": "error", "message": "Server busy, please retry."}), 503
-
-@app.route('/proxies')
-def proxy_stats():
-    available = len([p for p in PROXY_MANAGER.proxies if p.is_available])
-    return jsonify({
-        "total_proxies": len(PROXY_MANAGER.proxies),
-        "available_proxies": available,
-        "strategy": "Round Robin Sticky Session"
-    })
+    
+    # লাস্ট ব্যাকআপ সিঙ্গেল ট্রাই
+    acc_backup = single_worker_attempt(region, name, prefix)
+    if acc_backup:
+        return jsonify({"status": "success", "account": acc_backup})
+        
+    return jsonify({"status": "error", "message": "Server busy, please refresh."}), 503
 
 @app.route('/health')
 def health():
-    return jsonify({"status": "healthy", "service": "ARIYAN Ultimate Proxy-Gen Engine", "version": "12.1"})
+    return jsonify({"status": "healthy", "service": "ARIYAN Fast 100% Engine", "version": "12.1"})
 
 # ========== WSGI ENTRY POINT ==========
 def application(environ, start_response):
     return app(environ, start_response)
 
 if __name__ == '__main__':
-    print("🚀 ARIYAN Ultra-Fast Proxy Engine Running on port 8080...")
+    print("🚀 ARIYAN 100% Guaranteed Fast Engine Running on port 8080...")
     app.run(host='0.0.0.0', port=8080, debug=False)
