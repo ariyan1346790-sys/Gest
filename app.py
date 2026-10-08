@@ -3,6 +3,7 @@
 #  Run : python bd.py
 #  Open: http://127.0.0.1:8080
 #  429 / fail হলে নিজে নিজে আবার চেষ্টা করবে
+#  Output: Direct JSON (no HTML)
 # ═══════════════════════════════════════════════════════════════
 
 import hmac, hashlib, requests, string, random, json, base64, re, uuid, time
@@ -16,7 +17,7 @@ urllib3.disable_warnings()
 # ─────────── FIXED BD CONFIG ───────────
 REGION = "BD"
 LANG   = "bn"
-PREFIX = "Ariyan"
+PREFIX = "Aʀɪʏᴀɴ"
 
 API_BASE   = "https://100067.connect.garena.com"
 MAJOR_BASE = "https://loginbp.ppmainecoonghj.com"
@@ -104,8 +105,18 @@ def field14(open_id):
     ob = open_id.encode()
     return bytes([ob[i] ^ KEYSTREAM[i % 32] for i in range(len(ob))])
 
+# ── Superscript digit mapping ──
+SUPERSCRIPT_DIGITS = {
+    '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
+    '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
+}
+
+def to_superscript(s):
+    return ''.join(SUPERSCRIPT_DIGITS.get(c, c) for c in s)
+
 def rand_name():
-    return PREFIX + ''.join(random.choice(string.digits) for _ in range(6))
+    digits = ''.join(random.choice(string.digits) for _ in range(6))
+    return PREFIX + to_superscript(digits)
 
 def rand_pass():
     return "ARIYAN_BD_" + ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(8))
@@ -236,20 +247,31 @@ def register_once():
             return {"ok": False, "error": "JWT missing", "retry": True}
         token = m.group(0).decode()
 
+        # ── JWT payload থেকে info বের করি ──
+        acc = "N/A"
+        lvl = 1
+        nick = name
         try:
             pb = token.split('.')[1]; pad_ = '=' * (-len(pb) % 4)
             dj = json.loads(base64.urlsafe_b64decode(pb + pad_))
             acc = dj.get('account_id') or dj.get('external_id') or dj.get('uid') or "N/A"
+            lvl = dj.get('level') or dj.get('lv') or 1
+            # name / nickname — যেকোনো একটা থাকলেই কাজ করবে
+            nick = dj.get('nickname') or dj.get('name') or name
         except Exception:
-            acc = "N/A"
+            pass
 
         return {
             "ok": True,
             "name": name,
+            "nickname": str(nick),
             "uid": str(uid),
             "password": password,
             "account_id": str(acc),
+            "level": int(lvl) if str(lvl).isdigit() else lvl,
             "region": "BD",
+            "lang": LANG,
+            "open_id": oid,
             "token": token,
             "time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
@@ -281,7 +303,7 @@ def register():
 
     return {"ok": False, "error": f"{MAX_RETRY} বার চেষ্টার পরও ব্যর্থ ({last_err})"}
 
-# ─────────── HTTP HANDLER ───────────
+# ─────────── HTTP HANDLER (JSON ONLY) ───────────
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         # শুধু "/" এ register হবে → প্রতি refresh = ঠিক ১টা
@@ -293,47 +315,37 @@ class Handler(BaseHTTPRequestHandler):
 
         result = register()
 
+        # ── সবশেষে JSON output তৈরি ──
         if result.get("ok"):
-            attempts = result.get("attempts", 1)
-            html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>ARIYAN BD</title>
-<style>
-body{{font-family:monospace;background:#0d1117;color:#c9d1d9;padding:30px;}}
-h1{{color:#58a6ff;border-bottom:1px solid #30363d;padding-bottom:10px;}}
-.row{{margin:12px 0;padding:10px;background:#161b22;border-left:3px solid #238636;}}
-.k{{color:#8b949e;}}
-.v{{color:#7ee787;font-weight:bold;word-break:break-all;}}
-.small{{color:#8b949e;font-size:12px;margin-top:20px;}}
-</style></head><body>
-<h1>🇧🇩 ARIYAN — BANGLADESH</h1>
-<div class="row"><span class="k">STATUS :</span> <span class="v">SUCCESS</span></div>
-<div class="row"><span class="k">NAME   :</span> <span class="v">{result['name']}</span></div>
-<div class="row"><span class="k">UID    :</span> <span class="v">{result['uid']}</span></div>
-<div class="row"><span class="k">PASS   :</span> <span class="v">{result['password']}</span></div>
-<div class="row"><span class="k">ACC ID :</span> <span class="v">{result['account_id']}</span></div>
-<div class="row"><span class="k">REGION :</span> <span class="v">BD</span></div>
-<div class="row"><span class="k">TIME   :</span> <span class="v">{result['time']}</span></div>
-<div class="row"><span class="k">TOKEN  :</span> <span class="v">{result['token']}</span></div>
-<p class="small">🔄 Refresh = নতুন account &nbsp;|&nbsp; Attempts: {attempts}</p>
-</body></html>"""
+            payload = {
+                "status": "SUCCESS",
+                "attempts": result.get("attempts", 1),
+                "name": result.get("name"),
+                "nickname": result.get("nickname"),
+                "uid": result.get("uid"),
+                "password": result.get("password"),
+                "account_id": result.get("account_id"),
+                "level": result.get("level"),
+                "region": result.get("region"),
+                "lang": result.get("lang"),
+                "open_id": result.get("open_id"),
+                "token": result.get("token"),
+                "time": result.get("time"),
+            }
+            http_code = 200
         else:
-            html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>ARIYAN BD</title>
-<style>
-body{{font-family:monospace;background:#0d1117;color:#c9d1d9;padding:30px;}}
-h1{{color:#f85149;border-bottom:1px solid #30363d;padding-bottom:10px;}}
-.row{{margin:12px 0;padding:10px;background:#161b22;border-left:3px solid #f85149;}}
-.k{{color:#8b949e;}}
-.v{{color:#f85149;font-weight:bold;word-break:break-all;}}
-</style></head><body>
-<h1>❌ FAILED (সর্বোচ্চ চেষ্টার পরও)</h1>
-<div class="row"><span class="k">ERROR :</span> <span class="v">{result.get('error','unknown')}</span></div>
-<p style="color:#8b949e;margin-top:20px;">🔄 Refresh = আবার try</p>
-</body></html>"""
+            payload = {
+                "status": "FAILED",
+                "error": result.get("error", "unknown"),
+                "attempts": MAX_RETRY,
+                "time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            }
+            http_code = 500
 
-        data = html.encode('utf-8')
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        data = json.dumps(payload, indent=4, ensure_ascii=False).encode('utf-8')
+
+        self.send_response(http_code)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(data)))
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
         self.send_header('Pragma', 'no-cache')
@@ -351,7 +363,8 @@ if __name__ == '__main__':
     print("═" * 55)
     print("  🌐 Open : http://127.0.0.1:8080")
     print("  🇧🇩 Region : BD   |   Lang : bn")
-    print("  👤 Name   : Ariyan + digits")
+    print("  👤 Name   : Ariyan + superscript digits")
+    print("  📄 Output : Direct JSON")
     print(f"  🔁 Max Retry : {MAX_RETRY} বার")
     print("  🔄 1 refresh = 1 নতুন account")
     print("═" * 55)
