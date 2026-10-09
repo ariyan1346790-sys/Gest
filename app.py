@@ -1,18 +1,16 @@
 # ═══════════════════════════════════════════════════════════════
-#  ARIYAN — BANGLADESH AUTO REGISTER (AUTO-RETRY)
-#  Run : python bd.py
-#  Open: http://127.0.0.1:8080
-#  429 / fail হলে নিজে নিজে আবার চেষ্টা করবে
-#  Output: Direct JSON (no HTML)
+#  ARIYAN — BANGLADESH AUTO REGISTER (FLASK / VERCEL API)
 # ═══════════════════════════════════════════════════════════════
 
 import hmac, hashlib, requests, string, random, json, base64, re, uuid, time
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from flask import Flask, jsonify
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 import urllib3
 urllib3.disable_warnings()
+
+app = Flask(__name__)
 
 # ─────────── FIXED BD CONFIG ───────────
 REGION = "BD"
@@ -23,7 +21,7 @@ API_BASE   = "https://100067.connect.garena.com"
 MAJOR_BASE = "https://loginbp.ppmainecoonghj.com"
 API_HEX_KEY = "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3"
 
-MAX_RETRY = 15   # সর্বোচ্চ কতবার চেষ্টা করবে
+MAX_RETRY = 8   # Vercel-এর টাইট লিমিটের কারণে ৮ রাখা হলো
 
 REG_HEADERS = {
     "Connection": "Keep-Alive",
@@ -74,7 +72,6 @@ KEYSTREAM = bytes([
     0x30,0x30,0x30,0x30,0x30,0x32,0x30,0x31,0x37,0x30,0x30,0x30,0x30,0x30,0x32,0x30
 ])
 
-# ─────────── HELPERS ───────────
 def sign(payload):
     return hmac.new(API_HEX_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
 
@@ -105,11 +102,7 @@ def field14(open_id):
     ob = open_id.encode()
     return bytes([ob[i] ^ KEYSTREAM[i % 32] for i in range(len(ob))])
 
-# ── Superscript digit mapping ──
-SUPERSCRIPT_DIGITS = {
-    '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
-    '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
-}
+SUPERSCRIPT_DIGITS = {'0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹'}
 
 def to_superscript(s):
     return ''.join(SUPERSCRIPT_DIGITS.get(c, c) for c in s)
@@ -131,7 +124,6 @@ def rand_dev():
 def ua_of(d):
     return f"GarenaMSDK/4.0.44({d['device']} ;Android {d['android']};{LANG};IND;app 2.127.1 2019118047;)"
 
-# ─────────── REGISTER ONE ATTEMPT ───────────
 def register_once():
     s = requests.Session(); s.verify = False
     password = rand_pass()
@@ -140,32 +132,18 @@ def register_once():
     ua = ua_of(dev)
 
     try:
-        # Step 1: guest register
         body = '{"app_id":100067,"client_type":2,"password":"%s","source":2}' % password
         h = dict(REG_HEADERS); h["User-Agent"]=ua; h["Cookie"]=random.choice(COOKIES)
         h["Authorization"] = f"Signature {sign(body)}"
-        try:
-            r = s.post(f"{API_BASE}/api/v2/oauth/guest:register",
-                       headers=h, data=body, timeout=20, verify=False)
-        except Exception as e:
-            return {"ok": False, "error": f"Network: {type(e).__name__}"}
+        
+        r = s.post(f"{API_BASE}/api/v2/oauth/guest:register", headers=h, data=body, timeout=15, verify=False)
+        if r.status_code == 429: return {"ok": False, "error": "429", "retry": True}
+        if r.status_code != 200: return {"ok": False, "error": f"Guest HTTP {r.status_code}"}
 
-        if r.status_code == 429:
-            return {"ok": False, "error": "429", "retry": True}
-        if r.status_code != 200:
-            return {"ok": False, "error": f"Guest HTTP {r.status_code}"}
-
-        try:
-            j = r.json()
-        except Exception:
-            return {"ok": False, "error": "Guest JSON parse", "retry": True}
-
-        if j.get("code") != 0:
-            return {"ok": False, "error": f"Guest code {j.get('code')}", "retry": True}
-
+        j = r.json()
+        if j.get("code") != 0: return {"ok": False, "error": f"Guest code {j.get('code')}", "retry": True}
         uid = j["data"]["uid"]
 
-        # Step 2: token grant
         hx = lambda n: ''.join(random.choice('0123456789abcdef') for _ in range(n))
         devid = f"02-{hx(8)}-{hx(4)}-{hx(4)}-{hx(4)}-{hx(12)}"
         body = ('{"client_id":100067,"client_secret":"%s","client_type":2,'
@@ -173,29 +151,16 @@ def register_once():
                 ) % (API_HEX_KEY, devid, password, uid)
         h["Authorization"] = f"Signature {sign(body)}"
         h["Cookie"] = random.choice(COOKIES)
-        try:
-            r = s.post(f"{API_BASE}/api/v2/oauth/guest/token:grant",
-                       headers=h, data=body, timeout=20, verify=False)
-        except Exception as e:
-            return {"ok": False, "error": f"Network: {type(e).__name__}", "retry": True}
+        
+        r = s.post(f"{API_BASE}/api/v2/oauth/guest/token:grant", headers=h, data=body, timeout=15, verify=False)
+        if r.status_code == 429: return {"ok": False, "error": "429", "retry": True}
+        if r.status_code != 200: return {"ok": False, "error": f"Token HTTP {r.status_code}", "retry": True}
 
-        if r.status_code == 429:
-            return {"ok": False, "error": "429", "retry": True}
-        if r.status_code != 200:
-            return {"ok": False, "error": f"Token HTTP {r.status_code}", "retry": True}
-
-        try:
-            j = r.json()
-        except Exception:
-            return {"ok": False, "error": "Token JSON", "retry": True}
-
-        if j.get("code") != 0:
-            return {"ok": False, "error": f"Token code {j.get('code')}", "retry": True}
-
+        j = r.json()
+        if j.get("code") != 0: return {"ok": False, "error": f"Token code {j.get('code')}", "retry": True}
         at = j["data"]["access_token"]
         oid = j["data"]["open_id"]
 
-        # Step 3: MajorRegister (BD)
         p = proto({
             1: name, 2: at, 3: oid, 5: 102000007, 6: 4, 7: 1, 13: 1,
             14: field14(oid), 15: LANG, 16: 1, 22: FIELD_22,
@@ -203,18 +168,11 @@ def register_once():
         mh = dict(MAJOR_HEADERS); mh["Host"]="loginbp.ppmainecoonghj.com"
         mh["User-Agent"]=ua; mh["Content-Type"]="application/octet-stream"
         mh["Authorization"]=f"Bearer {at}"
-        try:
-            r = s.post(f"{MAJOR_BASE}/MajorRegister", headers=mh,
-                       data=bytes.fromhex(aes_enc(p.hex())), timeout=20, verify=False)
-        except Exception as e:
-            return {"ok": False, "error": f"Network: {type(e).__name__}", "retry": True}
+        
+        r = s.post(f"{MAJOR_BASE}/MajorRegister", headers=mh, data=bytes.fromhex(aes_enc(p.hex())), timeout=15, verify=False)
+        if r.status_code == 429: return {"ok": False, "error": "429", "retry": True}
+        if r.status_code != 200: return {"ok": False, "error": f"Register HTTP {r.status_code}", "retry": True}
 
-        if r.status_code == 429:
-            return {"ok": False, "error": "429", "retry": True}
-        if r.status_code != 200:
-            return {"ok": False, "error": f"Register HTTP {r.status_code}", "retry": True}
-
-        # Step 4: MajorLogin → JWT
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         av = dev['android']; api = 30 + int(av) - 11
         lp = proto({
@@ -231,48 +189,28 @@ def register_once():
             92: random.choice([19788,20000,21000]),
             93: "android_max", 97: 1, 98: 1, 99: "4", 100: "4", 104: 77149, 105: 1,
         })
-        try:
-            r = s.post(f"{MAJOR_BASE}/MajorLogin", headers=mh,
-                       data=bytes.fromhex(aes_enc(lp.hex())), timeout=20, verify=False)
-        except Exception as e:
-            return {"ok": False, "error": f"Network: {type(e).__name__}", "retry": True}
-
-        if r.status_code == 429:
-            return {"ok": False, "error": "429", "retry": True}
-        if r.status_code != 200:
-            return {"ok": False, "error": f"Login HTTP {r.status_code}", "retry": True}
+        
+        r = s.post(f"{MAJOR_BASE}/MajorLogin", headers=mh, data=bytes.fromhex(aes_enc(lp.hex())), timeout=15, verify=False)
+        if r.status_code == 429: return {"ok": False, "error": "429", "retry": True}
+        if r.status_code != 200: return {"ok": False, "error": f"Login HTTP {r.status_code}", "retry": True}
 
         m = re.search(rb"eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+", r.content)
-        if not m:
-            return {"ok": False, "error": "JWT missing", "retry": True}
+        if not m: return {"ok": False, "error": "JWT missing", "retry": True}
         token = m.group(0).decode()
 
-        # ── JWT payload থেকে info বের করি ──
-        acc = "N/A"
-        lvl = 1
-        nick = name
+        acc = "N/A"; lvl = 1; nick = name
         try:
             pb = token.split('.')[1]; pad_ = '=' * (-len(pb) % 4)
             dj = json.loads(base64.urlsafe_b64decode(pb + pad_))
             acc = dj.get('account_id') or dj.get('external_id') or dj.get('uid') or "N/A"
             lvl = dj.get('level') or dj.get('lv') or 1
-            # name / nickname — যেকোনো একটা থাকলেই কাজ করবে
             nick = dj.get('nickname') or dj.get('name') or name
-        except Exception:
-            pass
+        except: pass
 
         return {
-            "ok": True,
-            "name": name,
-            "nickname": str(nick),
-            "uid": str(uid),
-            "password": password,
-            "account_id": str(acc),
-            "level": int(lvl) if str(lvl).isdigit() else lvl,
-            "region": "BD",
-            "lang": LANG,
-            "open_id": oid,
-            "token": token,
+            "ok": True, "name": name, "nickname": str(nick), "uid": str(uid),
+            "password": password, "account_id": str(acc), "level": int(lvl) if str(lvl).isdigit() else lvl,
+            "region": "BD", "lang": LANG, "open_id": oid, "token": token,
             "time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
     except Exception as e:
@@ -281,91 +219,39 @@ def register_once():
         try: s.close()
         except: pass
 
-# ─────────── AUTO RETRY WRAPPER ───────────
 def register():
-    """যতক্ষণ না success, ততক্ষণ চেষ্টা করবে। MAX_RETRY এর পর fail"""
     last_err = "unknown"
     for attempt in range(1, MAX_RETRY + 1):
         r = register_once()
         if r.get("ok"):
             r["attempts"] = attempt
             return r
-
         last_err = r.get("error", "unknown")
-
-        # 429 হলে বেশি sleep, নাহলে কম
-        if "429" in last_err:
-            time.sleep(2.5 + random.uniform(0, 1.5))
-        elif r.get("retry"):
-            time.sleep(0.8 + random.uniform(0, 0.6))
-        else:
-            time.sleep(1.0)
-
+        if "429" in last_err: time.sleep(1.5)
+        else: time.sleep(0.5)
     return {"ok": False, "error": f"{MAX_RETRY} বার চেষ্টার পরও ব্যর্থ ({last_err})"}
 
-# ─────────── HTTP HANDLER (JSON ONLY) ───────────
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        # শুধু "/" এ register হবে → প্রতি refresh = ঠিক ১টা
-        if self.path not in ("/", "/index", "/index.html", ""):
-            self.send_response(204)
-            self.send_header('Content-Length', '0')
-            self.end_headers()
-            return
+# Flask Route
+@app.route('/')
+def index():
+    result = register()
+    if result.get("ok"):
+        payload = {
+            "status": "SUCCESS", "attempts": result.get("attempts", 1),
+            "name": result.get("name"), "nickname": result.get("nickname"),
+            "uid": result.get("uid"), "password": result.get("password"),
+            "account_id": result.get("account_id"), "level": result.get("level"),
+            "region": result.get("region"), "lang": result.get("lang"),
+            "open_id": result.get("open_id"), "token": result.get("token"),
+            "time": result.get("time"),
+        }
+        return jsonify(payload), 200
+    else:
+        payload = {
+            "status": "FAILED", "error": result.get("error", "unknown"),
+            "attempts": MAX_RETRY, "time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        }
+        return jsonify(payload), 500
 
-        result = register()
-
-        # ── সবশেষে JSON output তৈরি ──
-        if result.get("ok"):
-            payload = {
-                "status": "SUCCESS",
-                "attempts": result.get("attempts", 1),
-                "name": result.get("name"),
-                "nickname": result.get("nickname"),
-                "uid": result.get("uid"),
-                "password": result.get("password"),
-                "account_id": result.get("account_id"),
-                "level": result.get("level"),
-                "region": result.get("region"),
-                "lang": result.get("lang"),
-                "open_id": result.get("open_id"),
-                "token": result.get("token"),
-                "time": result.get("time"),
-            }
-            http_code = 200
-        else:
-            payload = {
-                "status": "FAILED",
-                "error": result.get("error", "unknown"),
-                "attempts": MAX_RETRY,
-                "time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            }
-            http_code = 500
-
-        data = json.dumps(payload, indent=4, ensure_ascii=False).encode('utf-8')
-
-        self.send_response(http_code)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Content-Length', str(len(data)))
-        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
-        self.send_header('Pragma', 'no-cache')
-        self.send_header('Expires', '0')
-        self.end_headers()
-        self.wfile.write(data)
-
-    def log_message(self, *a):
-        pass
-
-# ─────────── BOOT ───────────
 if __name__ == '__main__':
-    print("═" * 55)
-    print("  ARIYAN — BANGLADESH AUTO REGISTER (AUTO-RETRY)")
-    print("═" * 55)
-    print("  🌐 Open : http://127.0.0.1:8080")
-    print("  🇧🇩 Region : BD   |   Lang : bn")
-    print("  👤 Name   : Ariyan + superscript digits")
-    print("  📄 Output : Direct JSON")
-    print(f"  🔁 Max Retry : {MAX_RETRY} বার")
-    print("  🔄 1 refresh = 1 নতুন account")
-    print("═" * 55)
-    HTTPServer(('127.0.0.1', 8080), Handler).serve_forever()
+    app.run(host='0.0.0.0', port=8080)
